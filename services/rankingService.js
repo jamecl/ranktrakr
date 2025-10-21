@@ -19,6 +19,13 @@ class RankingService {
         keywordList,
         targetDomain
       );
+      console.log('Update summary:', {
+  keywordCount: keywords.length,
+  resultsWithPositions: rankings.filter(r => r?.result && r.result.position != null).length,
+  errors: rankings.filter(r => r?.error).length,
+  sample: rankings.slice(0, 5)
+});
+
 
       for (const { keyword, result, error } of rankings) {
         if (error) {
