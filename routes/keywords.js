@@ -271,6 +271,32 @@ router.get('/debug/ping-dataforseo', async (req, res) => {
     });
   }
 });
+// Debug SERP preview (must be before '/:id'!)
+router.get('/debug/serp', async (req, res) => {
+  try {
+    const kw = String(req.query.kw || '');
+    if (!kw) return res.status(400).json({ success: false, error: 'Missing kw query param' });
+
+    const domain = String(req.query.domain || 'blumenshinelawgroup.com');
+    const loc = Number(req.query.loc || process.env.DF_LOCATION_CODE || 1016367); // Chicago
+
+    const { top10, matches } = await dataforSEOService.previewTop(kw, domain, loc);
+
+    res.json({
+      success: true,
+      kw,
+      domain,
+      loc,
+      matchCount: matches.length,
+      top10,
+      matches
+    });
+  } catch (e) {
+    console.error('debug/serp error:', e);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 // ---- Egress check (can this service reach the public internet?) ----
 router.get('/debug/egress', async (req, res) => {
   try {
