@@ -115,6 +115,59 @@ class DataForSEOService {
     }
     return out;
   }
+    // Return simplified top items for quick inspection
+  async previewTop(keyword, opts = {}) {
+    const {
+      location_code = 2840,
+      location_name = 'Chicago,Illinois,United States',
+      language_code = 'en',
+      device = 'desktop',
+      os = 'windows',
+      depth = 100,
+      se_name = 'google.com',
+    } = opts;
+
+    const payload = [{
+      keyword,
+      location_code,
+      location_name,
+      language_code,
+      device,
+      os,
+      depth,
+      se_name
+    }];
+
+    const res = await fetch(`${this.base}/serp/google/organic/live/advanced`, {
+      method: 'POST',
+      headers: {
+        'Authorization': this.authHeader,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(payload)
+    });
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`DataForSEO HTTP ${res.status}: ${text || res.statusText}`);
+    }
+
+    const data = await res.json();
+    const items = data?.tasks?.[0]?.result?.[0]?.items || [];
+
+    return items.slice(0, 50).map(it => {
+      const url = it.url || it.link || it.relative_url || '';
+      let host = '';
+      try { host = new URL(url).hostname.toLowerCase(); } catch { host = (it.domain || '').toLowerCase(); }
+      return {
+        rank: it.rank_absolute ?? it.rank_group ?? null,
+        type: it.type,
+        host,
+        url
+      };
+    });
+  }
+
 }
 
 module.exports = new DataForSEOService();
