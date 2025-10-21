@@ -122,7 +122,7 @@ router.get('/debug/serp', async (req, res) => {
 
   try {
     const items = await dataforSEOService.previewTop(kw, {
-      location_code: 2840, // Chicago
+      location_code: 1016367, // Chicago
       location_name: 'Chicago,Illinois,United States',
       depth: 100,
       se_name: 'google.com'
@@ -148,6 +148,50 @@ router.get('/debug/serp', async (req, res) => {
     console.error('debug/serp error:', e);
     res.status(500).json({ success: false, error: e.message || String(e) });
   }
+
+  // Quick connectivity/auth probe to DataForSEO
+router.get('/debug/ping-dataforseo', async (req, res) => {
+  try {
+    const { DFS_LOGIN, DFS_PASSWORD } = process.env;
+    const endpoint = 'https://api.dataforseo.com/v3/serp/google/organic/live/regular';
+
+    // minimal valid task body
+    const body = [{
+      keyword: 'test',
+      location_name: 'Chicago,Illinois,United States',
+      language_code: 'en',
+      device: 'desktop'
+    }];
+
+    const r = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Basic ' + Buffer.from(`${DFS_LOGIN}:${DFS_PASSWORD}`).toString('base64'),
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(body)
+    });
+
+    const text = await r.text();
+    // Return a small slice so we don't spam logs, but keep status & headers
+    res.status(200).json({
+      ok: r.ok,
+      status: r.status,
+      statusText: r.statusText,
+      endpoint,
+      got: text.slice(0, 800)
+    });
+  } catch (e) {
+    // Node fetch exposes low-level cause codes like ENOTFOUND/ECONNRESET
+    res.status(500).json({
+      ok: false,
+      name: e.name,
+      message: e.message,
+      cause: (e.cause && (e.cause.code || String(e.cause))) || null
+    });
+  }
+});
+
 });
 
 module.exports = router;
