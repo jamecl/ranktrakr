@@ -35,7 +35,7 @@ class RankingService {
         if (result) {
           await this.saveRanking(client, keywordData.id, keyword, result);
         } else {
-          // Record that we checked today but found no ranking
+          // Record that we checked today but found no ranking (without overwriting any existing row)
           await this.saveNoResult(client, keywordData.id, keyword);
         }
       }
@@ -59,11 +59,11 @@ class RankingService {
       ON CONFLICT (keyword_id, timestamp)
       DO UPDATE SET
         ranking_position = EXCLUDED.ranking_position,
-        ranking_url = EXCLUDED.ranking_url,
-        search_volume = EXCLUDED.search_volume,
-        competition = EXCLUDED.competition,
-        cpc = EXCLUDED.cpc,
-        serp_features = EXCLUDED.serp_features
+        ranking_url      = EXCLUDED.ranking_url,
+        search_volume    = EXCLUDED.search_volume,
+        competition      = EXCLUDED.competition,
+        cpc              = EXCLUDED.cpc,
+        serp_features    = EXCLUDED.serp_features
     `;
     await client.query(query, [
       keywordId,
@@ -77,28 +77,18 @@ class RankingService {
     ]);
   }
 
+  // Only insert a NULL-result row if one doesn't exist yet for today.
+  // Never overwrite an existing row (prevents “good data -> null” regressions).
   async saveNoResult(client, keywordId, keyword) {
-  const query = `
-    INSERT INTO keyword_rankings (
-      keyword_id, keyword, ranking_position, ranking_url,
-      search_volume, competition, cpc, serp_features, timestamp
-    ) VALUES ($1, $2, NULL, NULL, NULL, NULL, NULL, '[]', CURRENT_DATE)
-    ON CONFLICT (keyword_id, timestamp)
-    DO UPDATE SET
-      -- keep existing non-null values; only write NULLs if nothing there yet
-      ranking_position = COALESCE(keyword_rankings.ranking_position, EXCLUDED.ranking_position),
-      ranking_url      = COALESCE(keyword_rankings.ranking_url,      EXCLUDED.ranking_url),
-      search_volume    = COALESCE(keyword_rankings.search_volume,    EXCLUDED.search_volume),
-      competition      = COALESCE(keyword_rankings.competition,      EXCLUDED.competition),
-      cpc              = COALESCE(keyword_rankings.cpc,              EXCLUDED.cpc),
-      serp_features    = COALESCE(keyword_rankings.serp_features,    EXCLUDED.serp_features)
-  `;
-  await client.query(query, [keywordId, keyword]);
-}
-cd /workspaces/ranktrakr
-git add services/rankingService.js
-git commit -m "Preserve existing rankings when saving 'no result' rows"
-git push origin main
+    const query = `
+      INSERT INTO keyword_rankings (
+        keyword_id, keyword, ranking_position, ranking_url,
+        search_volume, competition, cpc, serp_features, timestamp
+      ) VALUES ($1, $2, NULL, NULL, NULL, NULL, NULL, '[]', CURRENT_DATE)
+      ON CONFLICT (keyword_id, timestamp) DO NOTHING
+    `;
+    await client.query(query, [keywordId, keyword]);
+  }
 
   async calculateDeltas(client) {
     const deltaQuery = `
