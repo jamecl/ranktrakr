@@ -1,17 +1,25 @@
 const { dataforSEOClient } = require('../config/dataforseo');
 
 class DataForSEOService {
-  async getSerpResults(keyword, targetDomain, locationCode = 2840) {
+  async getSerpResults(keyword, targetDomain) {
     try {
-      const payload = [{
-        keyword: keyword,
-        location_code: locationCode,
-        language_code: 'en',
-        device: 'desktop',
-        os: 'windows',
-        depth: 100,
-        target: targetDomain
-      }];
+   const payload = [{
+  keyword,
+  // ✅ pick ONE of these; we’ll use the name for clarity:
+  location_name: "Chicago,Illinois,United States",
+  // (If you prefer a numeric code later, we can swap it in and delete location_name)
+
+  language_code: "en",
+  device: "desktop",
+  os: "windows",
+  depth: 100,
+
+  // ✅ match any page on your domain (not just the homepage)
+  target: `${targetDomain}*`
+  // (You can keep `se: "google.com"` if your code expects it; it's optional.)
+}];
+
+
 
       const response = await dataforSEOClient.post(
         '/serp/google/organic/live/advanced',
