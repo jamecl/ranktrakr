@@ -8,7 +8,7 @@ const dataforSEOService = require('../services/dataforSEOService');
 router.get('/', async (req, res) => {
   try {
     const rankings = await rankingService.getLatestRankings();
-    res.json({ success: true, data: rankings });
+    res.json({ success: true, source: 'no-view', count: rankings.length, data: rankings });
   } catch (error) {
     console.error('Error fetching keywords:', error);
     res.status(500).json({ success: false, error: error.message });
