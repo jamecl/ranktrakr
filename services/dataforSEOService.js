@@ -1,112 +1,135 @@
 // services/dataforSEOService.js
-const BASE = process.env.DATAFORSEO_BASE || 'https://api.dataforseo.com';
-const LOGIN = process.env.DATAFORSEO_LOGIN;
-const PASSWORD = process.env.DATAFORSEO_PASSWORD;
-
-function authHeader() {
-  if (!LOGIN || !PASSWORD) {
-    throw new Error('DATAFORSEO_LOGIN or DATAFORSEO_PASSWORD not set');
+class DataForSEOService {
+  constructor() {
+    this.endpoint = 'https://api.dataforseo.com/v3/serp/google/organic/live/regular';
   }
-  const b64 = Buffer.from(`${LOGIN}:${PASSWORD}`).toString('base64');
-  return `Basic ${b64}`;
-}
 
-async function dfetch(path, { method = 'POST', body = null } = {}) {
-  const url = `${BASE}${path}`;
-  try {
-    const res = await fetch(url, {
-      method,
+  _authHeader() {
+    const { DFS_LOGIN, DFS_PASSWORD } = process.env;
+    if (!DFS_LOGIN || !DFS_PASSWORD) {
+      throw new Error('Missing DFS_LOGIN / DFS_PASSWORD env vars');
+    }
+    return 'Basic ' + Buffer.from(`${DFS_LOGIN}:${DFS_PASSWORD}`).toString('base64');
+  }
+
+  async _call(body) {
+    const res = await fetch(this.endpoint, {
+      method: 'POST',
       headers: {
-        Authorization: authHeader(),
-        'Content-Type': 'application/json'
+        Authorization: this._authHeader(),
+        'Content-Type': 'application/json',
       },
-      body: body ? JSON.stringify(body) : null
+      body: JSON.stringify(body),
     });
 
     const text = await res.text();
-    if (!res.ok) {
-      console.error('DF ERROR', { url, status: res.status, statusText: res.statusText, body: text?.slice(0, 500) });
-      throw new Error(`HTTP ${res.status} ${res.statusText} - ${text?.slice(0, 200)}`);
+    let json;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      throw new Error(`DataForSEO returned non-JSON (HTTP ${res.status}): ${text.slice(0, 400)}`);
     }
-    try { return JSON.parse(text); } catch { return text; }
-  } catch (e) {
-    console.error('DF FETCH FAILED', { url, message: e.message });
-    throw new Error(`fetch failed: ${e.message}`);
+    return { status: res.status, json };
   }
-}
 
-// Flatten whatever DF returns into a single array of result items
-function extractItems(dfTaskResult0) {
-  if (!dfTaskResult0 || typeof dfTaskResult0 !== 'object') return [];
-
-  // Common case
-  if (Array.isArray(dfTaskResult0.items)) return dfTaskResult0.items;
-
-  // Some sections nest arrays or have { items: [] } under different keys.
-  let out = [];
-  for (const v of Object.values(dfTaskResult0)) {
-    if (Array.isArray(v)) {
-      out = out.concat(v);
-    } else if (v && typeof v === 'object' && Array.isArray(v.items)) {
-      out = out.concat(v.items);
-    }
+  _mapItems(items) {
+    if (!Array.isArray(items)) return [];
+    return items.map((it, i) => {
+      const url = it.url || '';
+      let host = '';
+      try { host = url ? new URL(url).host : ''; } catch { host = ''; }
+      return {
+        rank: it.rank_absolute ?? it.rank_group ?? (i + 1),
+        type: it.type || 'organic',
+        host,
+        url,
+      };
+    });
   }
-  return out;
-}
 
-async function previewTop(keyword, targetDomain, locationCode) {
-  const loc =
-    Number(locationCode) ||
-    Number(process.env.DF_LOCATION_CODE) ||
-    1016367; // Chicago, Cook County, IL
-
-  const payload = [
-    {
+  /**
+   * Quick preview of SERP items for a single keyword.
+   * Returns top10 + matches for target domain.
+   */
+  async previewTop(keyword, domain, location_code) {
+    const body = [{
       keyword,
-      location_code: loc,
+      // location: prefer numeric code; fallback to Chicago if not provided
+      location_code: Number(location_code) || Number(process.env.DF_LOCATION_CODE) || 1016367, // Chicago
       language_code: 'en',
       device: 'desktop',
-      os: 'windows',
       depth: 100,
-      target: targetDomain
+
+      // Be generous: include both names some examples use
+      se: 'google.com',
+      se_name: 'google.com',
+    }];
+
+    const { json } = await this._call(body);
+
+    // DataForSEO typical success:
+    // { status_code: 20000, tasks: [ { status_code: 20000, result: [ { items: [...] } ] } ] }
+    const task = Array.isArray(json?.tasks) ? json.tasks[0] : null;
+    if (!task || (task.status_code && task.status_code !== 20000)) {
+      // surface their message if present
+      const msg = task?.status_message || json?.status_message || 'DataForSEO error / no tasks';
+      // Return empty arrays (debug route will show empty); callers won’t crash
+      return { top10: [], matches: [], matchCount: 0, meta: { status_code: task?.status_code, msg } };
     }
-  ];
 
-  const data = await dfetch('/v3/serp/google/organic/live/advanced', payload);
+    const result = Array.isArray(task.result) ? task.result[0] : null;
+    const items = result?.items;
+    const mapped = this._mapItems(items);
 
-  const result0 = data?.tasks?.[0]?.result?.[0] || {};
-  const items = extractItems(result0);
+    const d = (domain || '').toLowerCase();
+    const matches = d
+      ? mapped.filter((i) => {
+          const h = (i.host || '').toLowerCase();
+          return h === d || h.endsWith('.' + d) || (i.url || '').toLowerCase().includes(d);
+        })
+      : [];
 
-  const normalized = items
-    .map(it => ({
-      rank: Number(it.rank_group ?? it.rank_absolute ?? it.rank ?? 0),
-      type: it.type || '',
-      host: it.domain || (typeof it.url === 'string' ? (it.url.split('/')[2] || '') : ''),
-      url: it.url || ''
-    }))
-    .filter(r => Number.isFinite(r.rank) && r.rank > 0)
-    .sort((a, b) => a.rank - b.rank);
+    return {
+      top10: mapped.slice(0, 10),
+      matches,
+      matchCount: matches.length,
+    };
+  }
 
-  const top10 = normalized.slice(0, 10);
-  const matches = normalized.filter(i => (i.host || '').includes(targetDomain));
+  /**
+   * Return a single ranking object for DB storage (or null if not found)
+   */
+  async getSerpResults(keyword, targetDomain, opts = {}) {
+    const loc = opts.location_code || Number(process.env.DF_LOCATION_CODE) || 1016367;
+    const { matches } = await this.previewTop(keyword, targetDomain, loc);
+    const best = matches[0] || null;
+    if (!best) return null;
 
-  return { top10, matches };
-}
+    return {
+      position: best.rank,
+      url: best.url,
+      searchVolume: null,
+      competition: null,
+      cpc: null,
+      serpFeatures: [],
+    };
+  }
 
-async function getSerpResults(keyword, targetDomain, locationCode) {
-  const { top10, matches } = await previewTop(keyword, targetDomain, locationCode);
-  const best = matches.sort((a, b) => a.rank - b.rank)[0];
-
-  return best
-    ? {
-        position: best.rank,
-        url: best.url,
-        searchVolume: null,
-        competition: null,
-        cpc: null,
-        serpFeatures: []
+  /**
+   * Simple sequential batch (keeps it easy to trace for now)
+   */
+  async batchGetRankings(keywords, targetDomain, opts = {}) {
+    const out = [];
+    for (const kw of keywords) {
+      try {
+        const result = await this.getSerpResults(kw, targetDomain, opts);
+        out.push({ keyword: kw, result, error: null });
+      } catch (e) {
+        out.push({ keyword: kw, result: null, error: e.message });
       }
-    : null;
+    }
+    return out;
+  }
 }
 
-module.exports = { previewTop, getSerpResults };
+module.exports = new DataForSEOService();
