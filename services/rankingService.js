@@ -126,14 +126,37 @@ class RankingService {
   }
 
   async getLatestRankings() {
-    const query = `
-      SELECT * FROM latest_rankings
-      ORDER BY ranking_position ASC NULLS LAST
-    `;
+  const query = `
+    SELECT
+      k.id AS keyword_id,
+      k.keyword,
+      k.target_domain,
+      kr.ranking_position,
+      kr.ranking_url,
+      kr.search_volume,
+      kr.timestamp,
+      kr.delta_7,
+      kr.delta_30
+    FROM keywords k
+    LEFT JOIN LATERAL (
+      SELECT
+        ranking_position,
+        ranking_url,
+        search_volume,
+        timestamp,
+        delta_7,
+        delta_30
+      FROM keyword_rankings
+      WHERE keyword_id = k.id
+      ORDER BY timestamp DESC
+      LIMIT 1
+    ) kr ON TRUE
+    ORDER BY COALESCE(kr.ranking_position, 999999) ASC NULLS LAST, k.keyword;
+  `;
+  const { rows } = await pool.query(query);
+  return rows;
+}
 
-    const { rows } = await pool.query(query);
-    return rows;
-  }
 }
 
 module.exports = new RankingService();
