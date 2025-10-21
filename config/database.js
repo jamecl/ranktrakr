@@ -1,26 +1,21 @@
+// config/database.js
 const { Pool } = require('pg');
 
+const connectionString =
+  process.env.DATABASE_URL ||              // private, in-project
+  process.env.DATABASE_PUBLIC_URL;         // public fallback (avoid if possible)
+
+const usingPublic = !!process.env.DATABASE_PUBLIC_URL && !process.env.DATABASE_URL;
+
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === 'production' ? {
-    rejectUnauthorized: false
-  } : false,
-  max: 5,
-  idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 2000,
+  connectionString,
+  ssl: usingPublic ? { rejectUnauthorized: false } : false,
 });
 
-pool.on('error', (err) => {
-  console.error('Unexpected database error:', err);
-});
-
-// Test connection
-pool.query('SELECT NOW()', (err, res) => {
-  if (err) {
-    console.error('Database connection failed:', err.message);
-  } else {
-    console.log('✅ Database connected at:', res.rows[0].now);
-  }
-});
+// TEMP: log host once so you can verify in logs
+try {
+  const host = new URL(connectionString).hostname;
+  console.log('🔌 DB host:', host);
+} catch {}
 
 module.exports = pool;
