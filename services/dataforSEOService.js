@@ -1,241 +1,115 @@
 // services/dataforSEOService.js
-const fetch = global.fetch || require('node-fetch'); // Node 18+ has global fetch; fallback for older
+// Uses DataForSEO "live advanced" endpoint, targets CHICAGO by default,
+// and returns the first matching organic result for the target domain.
+
+const LOCATION_CODE = Number(process.env.DATAFORSEO_LOCATION_CODE) || 1016367; // Chicago, IL
+const SEARCH_ENGINE = process.env.DATAFORSEO_SE || 'google.com';
+const LANGUAGE_CODE = process.env.DATAFORSEO_LANG || 'en';
+const DEVICE = process.env.DATAFORSEO_DEVICE || 'desktop';
+const OS = process.env.DATAFORSEO_OS || 'windows';
+const DEPTH = Number(process.env.DATAFORSEO_DEPTH) || 100;
+
+// If you use login/password auth with DataForSEO, set:
+//   DATAFORSEO_LOGIN and DATAFORSEO_PASSWORD in Railway.
+// If you use API-key header, set DATAFORSEO_AUTH_HEADER instead.
+function authHeaders() {
+  if (process.env.DATAFORSEO_AUTH_HEADER) {
+    return { Authorization: process.env.DATAFORSEO_AUTH_HEADER };
+  }
+  const u = process.env.DATAFORSEO_LOGIN || '';
+  const p = process.env.DATAFORSEO_PASSWORD || '';
+  const basic = Buffer.from(`${u}:${p}`).toString('base64');
+  return { Authorization: `Basic ${basic}` };
+}
+
+function hostFromUrl(url = '') {
+  try { return new URL(url).hostname; } catch { return ''; }
+}
+function matchesDomain(itemUrl, targetDomain) {
+  const h = hostFromUrl(itemUrl).toLowerCase();
+  const d = (targetDomain || '').toLowerCase();
+  return h === d || h.endsWith(`.${d}`);
+}
 
 class DataForSEOService {
-  constructor() {
-    this.base = 'https://api.dataforseo.com/v3';
-    const login = process.env.DATAFORSEO_LOGIN || process.env.DATAFORSEO_EMAIL || '';
-    const password = process.env.DATAFORSEO_PASSWORD || '';
-    const basic = Buffer.from(`${login}:${password}`).toString('base64');
-    this.authHeader = `Basic ${basic}`;
-  }
+  // Return { position, url, serpFeatures } OR null
+  async getSerpResults(keyword, targetDomain, locationCode = LOCATION_CODE) {
+    const endpoint = 'https://api.dataforseo.com/v3/serp/google/organic/live/advanced';
 
-  // Core POST to advanced live endpoint
-  async _postAdvanced(payload) {
-    const url = `${this.base}/serp/google/organic/live/advanced`;
-    const res = await fetch(url, {
+    const payload = [{
+      keyword,
+      se: SEARCH_ENGINE,
+      location_code: Number(locationCode),
+      language_code: LANGUAGE_CODE,
+      device: DEVICE,
+      os: OS,
+      depth: DEPTH,
+      // NOTE: "target" is not a server-side filter for results; we still scan items.
+      // We include it for metadata but we still find the first matching organic result below.
+      target: targetDomain
+    }];
+
+    const res = await fetch(endpoint, {
       method: 'POST',
-      headers: {
-        Authorization: this.authHeader,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(payload)
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify(payload),
     });
 
     if (!res.ok) {
-      const text = await res.text().catch(() => '');
-      throw new Error(`DataForSEO HTTP ${res.status}: ${text || res.statusText}`);
+      const txt = await res.text().catch(() => '');
+      throw new Error(`DataForSEO HTTP ${res.status}: ${txt.slice(0, 500)}`);
     }
 
-    const data = await res.json();
-    const results = data?.tasks?.[0]?.result?.[0] || {};
-    return results;
-  }
+    const json = await res.json();
 
-  /**
-   * Get result object for a single keyword/domain, Chicago by default.
-   * Returns { position, url, searchVolume, competition, cpc, serpFeatures } or null.
-   */
-  async getSerpResults(
-    keyword,
-    targetDomain,
-    {
-      location_code = 2840, // Chicago
-      location_name = 'Chicago,Illinois,United States',
-      language_code = 'en',
-      device = 'desktop',
-      os = 'windows',
-      depth = 100,
-      se_name = 'google.com'
-    } = {}
-  ) {
-    const payload = [{
-      keyword,
-      location_code,
-      location_name,
-      language_code,
-      device,
-      os,
-      depth,
-      se_name
-    }];
+    const task = json?.tasks?.[0];
+    const result = task?.result?.[0];
+    const items = result?.items || [];
 
-    const result = await this._postAdvanced(payload);
-    const items = result.items || [];
+    // Find first organic result that matches the target domain
+    const organic = items.find(
+      (it) => it.type === 'organic' && it.url && matchesDomain(it.url, targetDomain)
+    );
 
-    // find first organic result that matches targetDomain
-    const match = this._findMatch(items, targetDomain);
-
-    if (!match) return null;
-
-    // map metrics if present at the result level
-    const vol = result.search_volume ?? null;
-    const comp = result.competition ?? null;
-    const cpc = result.cpc ?? null;
+    if (!organic) {
+      return null;
+    }
 
     return {
-      position: match.rank_absolute ?? match.rank_group ?? null,
-      url: match.url || match.link || null,
-      searchVolume: vol,
-      competition: comp,
-      cpc,
-      serpFeatures: result.serp_features || []
+      position: Number(organic.rank_absolute || organic.rank || 0) || null,
+      url: organic.url,
+      serpFeatures: Array.isArray(organic.serp_features) ? organic.serp_features : [],
     };
   }
 
-  /**
-   * Batch get rankings for many keywords.
-   * Returns array of { keyword, result, error }
-   */
-  async batchGetRankings(
-    keywords,
-    targetDomain,
-    opts = {}
-  ) {
-    const MAX_BATCH = 10; // keep batches small for live endpoint
+  // Batch helper with gentle concurrency
+  async batchGetRankings(keywords, targetDomain, locationCode = LOCATION_CODE) {
     const out = [];
+    const queue = [...keywords];
+    const CONCURRENCY = 4;
+    const running = new Set();
 
-    for (let i = 0; i < keywords.length; i += MAX_BATCH) {
-      const slice = keywords.slice(i, i + MAX_BATCH);
-
-      const payload = slice.map(k => ({
-        keyword: k,
-        location_code: opts.location_code ?? 2840,
-        location_name: opts.location_name ?? 'Chicago,Illinois,United States',
-        language_code: opts.language_code ?? 'en',
-        device: opts.device ?? 'desktop',
-        os: opts.os ?? 'windows',
-        depth: opts.depth ?? 100,
-        se_name: opts.se_name ?? 'google.com'
-      }));
-
+    const runOne = async (kw) => {
       try {
-        const url = `${this.base}/serp/google/organic/live/advanced`;
-        const res = await fetch(url, {
-          method: 'POST',
-          headers: {
-            Authorization: this.authHeader,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify(payload)
-        });
-
-        if (!res.ok) {
-          const text = await res.text().catch(() => '');
-          throw new Error(`DataForSEO HTTP ${res.status}: ${text || res.statusText}`);
-        }
-
-        const data = await res.json();
-        const tasks = data?.tasks || [];
-
-        // Each task corresponds to a keyword in the same order.
-        for (let t = 0; t < tasks.length; t++) {
-          const task = tasks[t];
-          const originalKeyword = slice[t];
-          let resultObj = null;
-          let error = null;
-
-          try {
-            const taskResult = task?.result?.[0] || {};
-            const items = taskResult.items || [];
-            const match = this._findMatch(items, targetDomain);
-            if (match) {
-              resultObj = {
-                position: match.rank_absolute ?? match.rank_group ?? null,
-                url: match.url || match.link || null,
-                searchVolume: taskResult.search_volume ?? null,
-                competition: taskResult.competition ?? null,
-                cpc: taskResult.cpc ?? null,
-                serpFeatures: taskResult.serp_features || []
-              };
-            } else {
-              resultObj = null;
-            }
-          } catch (e) {
-            error = e.message || String(e);
-          }
-
-          out.push({ keyword: originalKeyword, result: resultObj, error });
-        }
+        const result = await this.getSerpResults(kw, targetDomain, locationCode);
+        out.push({ keyword: kw, result, error: null });
       } catch (e) {
-        // If the whole batch fails, mark all in the slice as errored
-        for (const k of slice) {
-          out.push({ keyword: k, result: null, error: e.message || String(e) });
-        }
+        out.push({ keyword: kw, result: null, error: e.message || String(e) });
       }
+    };
+
+    while (queue.length || running.size) {
+      while (queue.length && running.size < CONCURRENCY) {
+        const kw = queue.shift();
+        const p = runOne(kw).finally(() => running.delete(p));
+        running.add(p);
+      }
+      // wait for one to finish
+      // eslint-disable-next-line no-await-in-loop
+      await Promise.race(running);
     }
 
     return out;
-  }
-
-  /**
-   * Return simplified top items for quick inspection (debug)
-   * [{ rank, type, host, url }]
-   */
-  async previewTop(keyword, opts = {}) {
-    const {
-      location_code = 2840,
-      location_name = 'Chicago,Illinois,United States',
-      language_code = 'en',
-      device = 'desktop',
-      os = 'windows',
-      depth = 100,
-      se_name = 'google.com'
-    } = opts;
-
-    const payload = [{
-      keyword,
-      location_code,
-      location_name,
-      language_code,
-      device,
-      os,
-      depth,
-      se_name
-    }];
-
-    const result = await this._postAdvanced(payload);
-    const items = result.items || [];
-
-    return items.slice(0, 50).map(it => {
-      const url = it.url || it.link || it.relative_url || '';
-      let host = '';
-      try {
-        host = new URL(url).hostname.toLowerCase();
-      } catch {
-        host = (it.domain || '').toLowerCase();
-      }
-      return {
-        rank: it.rank_absolute ?? it.rank_group ?? null,
-        type: it.type,
-        host,
-        url
-      };
-    });
-  }
-
-  // Helpers
-
-  _findMatch(items, targetDomain) {
-    if (!Array.isArray(items) || !targetDomain) return null;
-    const td = String(targetDomain).toLowerCase();
-
-    for (const it of items) {
-      const url = it.url || it.link || '';
-      let host = '';
-      try {
-        host = new URL(url).hostname.toLowerCase();
-      } catch {
-        host = (it.domain || '').toLowerCase();
-      }
-      if (!host) continue;
-
-      // Match host exactly, subdomain, or contains (looser)
-      if (host === td || host.endsWith('.' + td) || host.includes(td)) {
-        return it;
-      }
-    }
-    return null;
   }
 }
 
