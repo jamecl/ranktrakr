@@ -16,34 +16,7 @@ router.get('/', async (req, res) => {
 });
 
 // Get specific keyword with historical data
-router.get('/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-    const days = parseInt(req.query.days) || 30;
-
-    const keywordQuery = 'SELECT * FROM keywords WHERE id = $1';
-    const { rows: [keyword] } = await pool.query(keywordQuery, [id]);
-
-    if (!keyword) {
-      return res.status(404).json({ success: false, error: 'Keyword not found' });
-    }
-
-    const rankings = await rankingService.getKeywordRankings(id, days);
-
-    res.json({
-      success: true,
-      data: {
-        keyword,
-        rankings
-      }
-    });
-  } catch (error) {
-    console.error('Error fetching keyword:', error);
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-// Add new keyword
+// Add new keyword (fast: just insert; ranking happens later via /api/keywords/update)
 router.post('/', async (req, res) => {
   try {
     const { keyword, targetDomain = 'blumenshinelawgroup.com' } = req.body;
@@ -60,26 +33,18 @@ router.post('/', async (req, res) => {
 
     const { rows: [newKeyword] } = await pool.query(query, [keyword, targetDomain]);
 
-    // Fetch initial ranking
-    const ranking = await dataforSEOService.getSerpResults(keyword, targetDomain);
-    if (ranking) {
-      const client = await pool.connect();
-      try {
-        await rankingService.saveRanking(client, newKeyword.id, keyword, ranking);
-      } finally {
-        client.release();
-      }
-    }
-
-    res.json({ success: true, data: newKeyword });
+    // Note: we no longer call dataforSEOService here — that runs later via /api/keywords/update
+    return res.json({ success: true, data: newKeyword, pending: true });
   } catch (error) {
     if (error.code === '23505') {
+      // unique violation -> already exists
       return res.status(409).json({ success: false, error: 'Keyword already exists' });
     }
     console.error('Error adding keyword:', error);
-    res.status(500).json({ success: false, error: error.message });
+    return res.status(500).json({ success: false, error: error.message });
   }
 });
+
 
 // Delete keyword
 router.delete('/:id', async (req, res) => {
