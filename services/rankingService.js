@@ -33,11 +33,15 @@ class RankingService {
           continue;
         }
 
-        const keywordData = keywords.find(k => k.keyword === keyword);
-        if (!keywordData || !result) continue;
+       const keywordData = keywords.find(k => k.keyword === keyword);
+        if (!keywordData) continue;
 
-        await this.saveRanking(client, keywordData.id, keyword, result);
-      }
+        if (result) {
+  await this.saveRanking(client, keywordData.id, keyword, result);
+        } else {
+  await this.saveNoResult(client, keywordData.id, keyword);
+}
+
 
       await this.calculateDeltas(client);
       console.log('Rankings update completed');
@@ -64,6 +68,25 @@ class RankingService {
         cpc = EXCLUDED.cpc,
         serp_features = EXCLUDED.serp_features
     `;
+
+  async saveNoResult(client, keywordId, keyword) {
+    const query = `
+      INSERT INTO keyword_rankings (
+        keyword_id, keyword, ranking_position, ranking_url,
+        search_volume, competition, cpc, serp_features, timestamp
+    ) VALUES ($1, $2, NULL, NULL, NULL, NULL, NULL, '[]', CURRENT_DATE)
+    ON CONFLICT (keyword_id, timestamp)
+    DO UPDATE SET
+      ranking_position = NULL,
+      ranking_url = NULL,
+      search_volume = NULL,
+      competition = NULL,
+      cpc = NULL,
+      serp_features = '[]'
+  `;
+  await client.query(query, [keywordId, keyword]);
+}
+
 
     await client.query(query, [
       keywordId,
