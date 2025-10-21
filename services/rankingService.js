@@ -78,22 +78,27 @@ class RankingService {
   }
 
   async saveNoResult(client, keywordId, keyword) {
-    const query = `
-      INSERT INTO keyword_rankings (
-        keyword_id, keyword, ranking_position, ranking_url,
-        search_volume, competition, cpc, serp_features, timestamp
-      ) VALUES ($1, $2, NULL, NULL, NULL, NULL, NULL, '[]', CURRENT_DATE)
-      ON CONFLICT (keyword_id, timestamp)
-      DO UPDATE SET
-        ranking_position = NULL,
-        ranking_url = NULL,
-        search_volume = NULL,
-        competition = NULL,
-        cpc = NULL,
-        serp_features = '[]'
-    `;
-    await client.query(query, [keywordId, keyword]);
-  }
+  const query = `
+    INSERT INTO keyword_rankings (
+      keyword_id, keyword, ranking_position, ranking_url,
+      search_volume, competition, cpc, serp_features, timestamp
+    ) VALUES ($1, $2, NULL, NULL, NULL, NULL, NULL, '[]', CURRENT_DATE)
+    ON CONFLICT (keyword_id, timestamp)
+    DO UPDATE SET
+      -- keep existing non-null values; only write NULLs if nothing there yet
+      ranking_position = COALESCE(keyword_rankings.ranking_position, EXCLUDED.ranking_position),
+      ranking_url      = COALESCE(keyword_rankings.ranking_url,      EXCLUDED.ranking_url),
+      search_volume    = COALESCE(keyword_rankings.search_volume,    EXCLUDED.search_volume),
+      competition      = COALESCE(keyword_rankings.competition,      EXCLUDED.competition),
+      cpc              = COALESCE(keyword_rankings.cpc,              EXCLUDED.cpc),
+      serp_features    = COALESCE(keyword_rankings.serp_features,    EXCLUDED.serp_features)
+  `;
+  await client.query(query, [keywordId, keyword]);
+}
+cd /workspaces/ranktrakr
+git add services/rankingService.js
+git commit -m "Preserve existing rankings when saving 'no result' rows"
+git push origin main
 
   async calculateDeltas(client) {
     const deltaQuery = `
