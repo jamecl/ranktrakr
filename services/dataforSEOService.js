@@ -1,60 +1,22 @@
 // services/dataforSEOService.js
-
-// Node 18+ has global fetch. If you’re on older Node, install node-fetch.
-const btoa = (str) => Buffer.from(str).toString('base64');
+const fetch = global.fetch || require('node-fetch'); // Node 18+ has global fetch; fallback for older
 
 class DataForSEOService {
   constructor() {
     this.base = 'https://api.dataforseo.com/v3';
-    this.authHeader = 'Basic ' + btoa(
-      `${process.env.DATAFORSEO_LOGIN}:${process.env.DATAFORSEO_PASSWORD}`
-    );
+    const login = process.env.DATAFORSEO_LOGIN || process.env.DATAFORSEO_EMAIL || '';
+    const password = process.env.DATAFORSEO_PASSWORD || '';
+    const basic = Buffer.from(`${login}:${password}`).toString('base64');
+    this.authHeader = `Basic ${basic}`;
   }
 
-  // --- helpers ---
-  _hostname(u) {
-    try {
-      return new URL(u).hostname.toLowerCase();
-    } catch {
-      return (u || '').toLowerCase();
-    }
-  }
-
-  _matchesTarget(urlOrDomain, targetDomain) {
-    const host = this._hostname(urlOrDomain);
-    const t = String(targetDomain || '').toLowerCase().replace(/^https?:\/\//, '');
-    if (!host || !t) return false;
-    return host === t || host.endsWith('.' + t) || host.includes(t);
-  }
-
-  /**
-   * Fetch Google Organic SERP (Chicago) and find first result for targetDomain
-   * Returns { position, url, serpFeatures } | null
-   */
-  async getSerpResults(keyword, targetDomain, opts = {}) {
-    const {
-      // Use location_name for Chicago to avoid code mismatch issues
-      location_name = 'Chicago,Illinois,United States',
-      language_code = 'en',
-      device = 'desktop',
-      os = 'windows',
-      depth = 100
-    } = opts;
-
-    // IMPORTANT: do NOT send `target` here — we’ll match locally
-    const payload = [{
-      keyword,
-      location_name,
-      language_code,
-      device,
-      os,
-      depth
-    }];
-
-    const res = await fetch(`${this.base}/serp/google/organic/live/advanced`, {
+  // Core POST to advanced live endpoint
+  async _postAdvanced(payload) {
+    const url = `${this.base}/serp/google/organic/live/advanced`;
+    const res = await fetch(url, {
       method: 'POST',
       headers: {
-        'Authorization': this.authHeader,
+        Authorization: this.authHeader,
         'Content-Type': 'application/json'
       },
       body: JSON.stringify(payload)
@@ -66,56 +28,150 @@ class DataForSEOService {
     }
 
     const data = await res.json();
-    const items = data?.tasks?.[0]?.result?.[0]?.items || [];
-
-    let found = null;
-    for (const it of items) {
-      const url = it.url || it.relative_url || '';
-      const domain = it.domain || '';
-      if (this._matchesTarget(url || domain, targetDomain)) {
-        found = {
-          position: it.rank_absolute ?? it.rank_group ?? null,
-          url: url || (domain ? `https://${domain}` : ''),
-          serpFeatures: {
-            type: it.type,
-            is_featured_snippet: !!it.is_featured_snippet,
-            pixel_position: it.pixel_position ?? null
-          }
-        };
-        break;
-      }
-    }
-
-    if (!found && items.length) {
-      // Lightweight debug so we can see why nothing matched
-      console.log(
-        '[DataForSEO] No match for',
-        targetDomain,
-        'in first 5 items of',
-        `"${keyword}"`,
-        items.slice(0, 5).map(i => ({ rank: i.rank_absolute, domain: i.domain, url: i.url }))
-      );
-    }
-
-    return found; // may be null if not in top N
+    const results = data?.tasks?.[0]?.result?.[0] || {};
+    return results;
   }
 
   /**
-   * Batch wrapper so we can update multiple keywords
+   * Get result object for a single keyword/domain, Chicago by default.
+   * Returns { position, url, searchVolume, competition, cpc, serpFeatures } or null.
    */
-  async batchGetRankings(keywords, targetDomain, opts = {}) {
+  async getSerpResults(
+    keyword,
+    targetDomain,
+    {
+      location_code = 2840, // Chicago
+      location_name = 'Chicago,Illinois,United States',
+      language_code = 'en',
+      device = 'desktop',
+      os = 'windows',
+      depth = 100,
+      se_name = 'google.com'
+    } = {}
+  ) {
+    const payload = [{
+      keyword,
+      location_code,
+      location_name,
+      language_code,
+      device,
+      os,
+      depth,
+      se_name
+    }];
+
+    const result = await this._postAdvanced(payload);
+    const items = result.items || [];
+
+    // find first organic result that matches targetDomain
+    const match = this._findMatch(items, targetDomain);
+
+    if (!match) return null;
+
+    // map metrics if present at the result level
+    const vol = result.search_volume ?? null;
+    const comp = result.competition ?? null;
+    const cpc = result.cpc ?? null;
+
+    return {
+      position: match.rank_absolute ?? match.rank_group ?? null,
+      url: match.url || match.link || null,
+      searchVolume: vol,
+      competition: comp,
+      cpc,
+      serpFeatures: result.serp_features || []
+    };
+  }
+
+  /**
+   * Batch get rankings for many keywords.
+   * Returns array of { keyword, result, error }
+   */
+  async batchGetRankings(
+    keywords,
+    targetDomain,
+    opts = {}
+  ) {
+    const MAX_BATCH = 10; // keep batches small for live endpoint
     const out = [];
-    for (const kw of keywords) {
+
+    for (let i = 0; i < keywords.length; i += MAX_BATCH) {
+      const slice = keywords.slice(i, i + MAX_BATCH);
+
+      const payload = slice.map(k => ({
+        keyword: k,
+        location_code: opts.location_code ?? 2840,
+        location_name: opts.location_name ?? 'Chicago,Illinois,United States',
+        language_code: opts.language_code ?? 'en',
+        device: opts.device ?? 'desktop',
+        os: opts.os ?? 'windows',
+        depth: opts.depth ?? 100,
+        se_name: opts.se_name ?? 'google.com'
+      }));
+
       try {
-        const result = await this.getSerpResults(kw, targetDomain, opts);
-        out.push({ keyword: kw, result, error: null });
+        const url = `${this.base}/serp/google/organic/live/advanced`;
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: {
+            Authorization: this.authHeader,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(payload)
+        });
+
+        if (!res.ok) {
+          const text = await res.text().catch(() => '');
+          throw new Error(`DataForSEO HTTP ${res.status}: ${text || res.statusText}`);
+        }
+
+        const data = await res.json();
+        const tasks = data?.tasks || [];
+
+        // Each task corresponds to a keyword in the same order.
+        for (let t = 0; t < tasks.length; t++) {
+          const task = tasks[t];
+          const originalKeyword = slice[t];
+          let resultObj = null;
+          let error = null;
+
+          try {
+            const taskResult = task?.result?.[0] || {};
+            const items = taskResult.items || [];
+            const match = this._findMatch(items, targetDomain);
+            if (match) {
+              resultObj = {
+                position: match.rank_absolute ?? match.rank_group ?? null,
+                url: match.url || match.link || null,
+                searchVolume: taskResult.search_volume ?? null,
+                competition: taskResult.competition ?? null,
+                cpc: taskResult.cpc ?? null,
+                serpFeatures: taskResult.serp_features || []
+              };
+            } else {
+              resultObj = null;
+            }
+          } catch (e) {
+            error = e.message || String(e);
+          }
+
+          out.push({ keyword: originalKeyword, result: resultObj, error });
+        }
       } catch (e) {
-        out.push({ keyword: kw, result: null, error: e.message || String(e) });
+        // If the whole batch fails, mark all in the slice as errored
+        for (const k of slice) {
+          out.push({ keyword: k, result: null, error: e.message || String(e) });
+        }
       }
     }
+
     return out;
   }
-    // Return simplified top items for quick inspection
+
+  /**
+   * Return simplified top items for quick inspection (debug)
+   * [{ rank, type, host, url }]
+   */
   async previewTop(keyword, opts = {}) {
     const {
       location_code = 2840,
@@ -124,7 +180,7 @@ class DataForSEOService {
       device = 'desktop',
       os = 'windows',
       depth = 100,
-      se_name = 'google.com',
+      se_name = 'google.com'
     } = opts;
 
     const payload = [{
@@ -138,27 +194,17 @@ class DataForSEOService {
       se_name
     }];
 
-    const res = await fetch(`${this.base}/serp/google/organic/live/advanced`, {
-      method: 'POST',
-      headers: {
-        'Authorization': this.authHeader,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(payload)
-    });
-
-    if (!res.ok) {
-      const text = await res.text().catch(() => '');
-      throw new Error(`DataForSEO HTTP ${res.status}: ${text || res.statusText}`);
-    }
-
-    const data = await res.json();
-    const items = data?.tasks?.[0]?.result?.[0]?.items || [];
+    const result = await this._postAdvanced(payload);
+    const items = result.items || [];
 
     return items.slice(0, 50).map(it => {
       const url = it.url || it.link || it.relative_url || '';
       let host = '';
-      try { host = new URL(url).hostname.toLowerCase(); } catch { host = (it.domain || '').toLowerCase(); }
+      try {
+        host = new URL(url).hostname.toLowerCase();
+      } catch {
+        host = (it.domain || '').toLowerCase();
+      }
       return {
         rank: it.rank_absolute ?? it.rank_group ?? null,
         type: it.type,
@@ -168,6 +214,29 @@ class DataForSEOService {
     });
   }
 
+  // Helpers
+
+  _findMatch(items, targetDomain) {
+    if (!Array.isArray(items) || !targetDomain) return null;
+    const td = String(targetDomain).toLowerCase();
+
+    for (const it of items) {
+      const url = it.url || it.link || '';
+      let host = '';
+      try {
+        host = new URL(url).hostname.toLowerCase();
+      } catch {
+        host = (it.domain || '').toLowerCase();
+      }
+      if (!host) continue;
+
+      // Match host exactly, subdomain, or contains (looser)
+      if (host === td || host.endsWith('.' + td) || host.includes(td)) {
+        return it;
+      }
+    }
+    return null;
+  }
 }
 
 module.exports = new DataForSEOService();

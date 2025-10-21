@@ -8,7 +8,7 @@ const dataforSEOService = require('../services/dataforSEOService');
 router.get('/', async (req, res) => {
   try {
     const rankings = await rankingService.getLatestRankings();
-    res.json({ success: true, source: 'no-view', count: rankings.length, data: rankings });
+    res.json({ success: true, data: rankings });
   } catch (error) {
     console.error('Error fetching keywords:', error);
     res.status(500).json({ success: false, error: error.message });
@@ -16,12 +16,39 @@ router.get('/', async (req, res) => {
 });
 
 // Get specific keyword with historical data
-// Add new keyword (fast: just insert; ranking happens later via /api/keywords/update)
+router.get('/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const days = parseInt(req.query.days, 10) || 30;
+
+    const keywordQuery = 'SELECT * FROM keywords WHERE id = $1';
+    const { rows: [keyword] } = await pool.query(keywordQuery, [id]);
+
+    if (!keyword) {
+      return res.status(404).json({ success: false, error: 'Keyword not found' });
+    }
+
+    const rankings = await rankingService.getKeywordRankings(id, days);
+
+    res.json({
+      success: true,
+      data: {
+        keyword,
+        rankings
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching keyword:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Add new keyword
 router.post('/', async (req, res) => {
   try {
     const { keyword, targetDomain = 'blumenshinelawgroup.com' } = req.body;
 
-    if (!keyword) {
+    if (!keyword || !String(keyword).trim()) {
       return res.status(400).json({ success: false, error: 'Keyword is required' });
     }
 
@@ -31,20 +58,33 @@ router.post('/', async (req, res) => {
       RETURNING *
     `;
 
-    const { rows: [newKeyword] } = await pool.query(query, [keyword, targetDomain]);
+    const { rows: [newKeyword] } = await pool.query(query, [keyword.trim(), targetDomain]);
 
-    // Note: we no longer call dataforSEOService here — that runs later via /api/keywords/update
-    return res.json({ success: true, data: newKeyword, pending: true });
+    // Fetch initial ranking (non-blocking approach is fine; here we do it inline)
+    try {
+      const ranking = await dataforSEOService.getSerpResults(keyword.trim(), targetDomain);
+      if (ranking) {
+        const client = await pool.connect();
+        try {
+          await rankingService.saveRanking(client, newKeyword.id, keyword.trim(), ranking);
+        } finally {
+          client.release();
+        }
+      }
+    } catch (e) {
+      // Don't fail the request if SERP call fails
+      console.warn('Initial SERP fetch failed:', e.message);
+    }
+
+    res.json({ success: true, data: newKeyword });
   } catch (error) {
     if (error.code === '23505') {
-      // unique violation -> already exists
       return res.status(409).json({ success: false, error: 'Keyword already exists' });
     }
     console.error('Error adding keyword:', error);
-    return res.status(500).json({ success: false, error: error.message });
+    res.status(500).json({ success: false, error: error.message });
   }
 });
-
 
 // Delete keyword
 router.delete('/:id', async (req, res) => {
@@ -66,6 +106,47 @@ router.post('/update', async (req, res) => {
   } catch (error) {
     console.error('Error updating rankings:', error);
     res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * DEBUG: peek at top SERP items for a keyword (Chicago).
+ * Example:
+ *   GET /api/keywords/debug/serp?kw=compensation%20for%20moderate%20hearing%20loss&domain=blumenshinelawgroup.com
+ */
+router.get('/debug/serp', async (req, res) => {
+  const kw = (req.query.kw || '').trim();
+  const domain = (req.query.domain || '').trim().toLowerCase();
+
+  if (!kw) return res.status(400).json({ success: false, error: 'kw is required' });
+
+  try {
+    const items = await dataforSEOService.previewTop(kw, {
+      location_code: 2840, // Chicago
+      location_name: 'Chicago,Illinois,United States',
+      depth: 100,
+      se_name: 'google.com'
+    });
+
+    const matches = domain
+      ? items.filter(i =>
+          i.host === domain ||
+          i.host.endsWith('.' + domain) ||
+          i.host.includes(domain)
+        )
+      : [];
+
+    res.json({
+      success: true,
+      kw,
+      domain,
+      matchCount: matches.length,
+      top10: items.slice(0, 10),
+      matches
+    });
+  } catch (e) {
+    console.error('debug/serp error:', e);
+    res.status(500).json({ success: false, error: e.message || String(e) });
   }
 });
 
