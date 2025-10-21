@@ -29,7 +29,9 @@ class RankingService {
           console.error(`Error updating ${keyword}:`, error);
           continue;
         }
-        const keywordData = keywords.find((k) => k.keyword === keyword);
+        const norm = s => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
+        const keywordData = keywords.find(k => norm(k.keyword) === norm(keyword));
+
         if (!keywordData) continue;
 
         if (result) {
