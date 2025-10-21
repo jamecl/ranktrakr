@@ -52,6 +52,34 @@ async function callDataForSEO(keyword, locationCode) {
     const txt = await res.text().catch(() => '');
     throw new Error(`DataForSEO HTTP ${res.status}: ${txt.slice(0, 500)}`);
   }
+
+  const json = await res.json();
+
+  // DataForSEO “success” is status_code === 20000
+  const task = Array.isArray(json?.tasks) ? json.tasks[0] : null;
+  if (!task) throw new Error('Malformed DataForSEO response: no tasks[]');
+
+  if (task.status_code && task.status_code !== 20000) {
+    throw new Error(`DataForSEO error ${task.status_code}: ${task.status_message || 'unknown'}`);
+  }
+
+  const r0 = Array.isArray(task.result) ? task.result[0] : null;
+  const items = Array.isArray(r0?.items) ? r0.items : [];
+
+  return items; // ALWAYS an array
+}
+
+
+  const res = await fetch(endpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify(payload),
+  });
+
+  if (!res.ok) {
+    const txt = await res.text().catch(() => '');
+    throw new Error(`DataForSEO HTTP ${res.status}: ${txt.slice(0, 500)}`);
+  }
   const json = await res.json();
   const task = json?.tasks?.[0];
   const result = task?.result?.[0];
@@ -78,8 +106,8 @@ class DataForSEOService {
   }
 
   // Used by /api/keywords/debug/serp — shows the first N SERP items + matches for your domain
-  async previewTop(keyword, targetDomain, locationCode = LOCATION_CODE, topN = 10) {
-    const items = await callDataForSEO(keyword, locationCode);
+  const items = await callDataForSEO(keyword, locationCode);
+  const arr = Array.isArray(items) ? items : []; // safety belt
 
     // Map top-N items (any type)
     const top = items
