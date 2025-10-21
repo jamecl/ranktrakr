@@ -5,10 +5,17 @@ class DataForSEOService {
   }
 
   _authHeader() {
-    const { DFS_LOGIN, DFS_PASSWORD } = process.env;
-    if (!DFS_LOGIN || !DFS_PASSWORD) {
-      throw new Error('Missing DFS_LOGIN / DFS_PASSWORD env vars');
-    }
+   const DFS_LOGIN =
+  process.env.DFS_LOGIN ||
+  process.env.DATAFORSEO_LOGIN;
+
+const DFS_PASSWORD =
+  process.env.DFS_PASSWORD ||
+  process.env.DATAFORSEO_PASSWORD;
+
+if (!DFS_LOGIN || !DFS_PASSWORD) {
+  throw new Error('Missing DataForSEO credentials');
+}
     return 'Basic ' + Buffer.from(`${DFS_LOGIN}:${DFS_PASSWORD}`).toString('base64');
   }
 

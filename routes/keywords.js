@@ -44,7 +44,14 @@ router.post('/update', async (req, res) => {
  * ========================= */
 router.get('/debug/ping-dataforseo', async (req, res) => {
   try {
-    const { DFS_LOGIN, DFS_PASSWORD } = process.env;
+    const DFS_LOGIN =
+  process.env.DFS_LOGIN ||
+  process.env.DATAFORSEO_LOGIN;
+
+const DFS_PASSWORD =
+  process.env.DFS_PASSWORD ||
+  process.env.DATAFORSEO_PASSWORD;
+
     const endpoint = 'https://api.dataforseo.com/v3/serp/google/organic/live/regular';
 
     const body = [{
