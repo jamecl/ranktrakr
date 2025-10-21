@@ -298,7 +298,8 @@ router.get('/debug/serp', async (req, res) => {
 });
 
 // ---- Egress check (can this service reach the public internet?) ----
-router.get('/debug/egress', async (req, res) => {
+router.get('/:id', async (req, res) => { /* ... */ });
+
   try {
     const r = await fetch('https://httpbin.org/get', { method: 'GET' });
     const text = await r.text();
