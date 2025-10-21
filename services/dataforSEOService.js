@@ -125,18 +125,20 @@ if (!DFS_LOGIN || !DFS_PASSWORD) {
   /**
    * Simple sequential batch (keeps it easy to trace for now)
    */
-  async batchGetRankings(keywords, targetDomain, opts = {}) {
-    const out = [];
-    for (const kw of keywords) {
-      try {
-        const result = await this.getSerpResults(kw, targetDomain, opts);
-        out.push({ keyword: kw, result, error: null });
-      } catch (e) {
-        out.push({ keyword: kw, result: null, error: e.message });
-      }
+  // Reuse the proven single-keyword flow for every keyword
+async batchGetRankings(keywords, targetDomain, locationCode) {
+  const results = [];
+  for (const keyword of keywords) {
+    try {
+      const result = await this.getSerpResults(keyword, targetDomain, locationCode);
+      results.push({ keyword, result, error: null });
+    } catch (e) {
+      results.push({ keyword, result: null, error: e.message || String(e) });
     }
-    return out;
   }
+  return results;
+}
+
 }
 
 module.exports = new DataForSEOService();
