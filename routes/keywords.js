@@ -271,6 +271,25 @@ router.get('/debug/ping-dataforseo', async (req, res) => {
     });
   }
 });
+// ---- Egress check (can this service reach the public internet?) ----
+router.get('/debug/egress', async (req, res) => {
+  try {
+    const r = await fetch('https://httpbin.org/get', { method: 'GET' });
+    const text = await r.text();
+    res.status(200).json({
+      ok: r.ok,
+      status: r.status,
+      sample: text.slice(0, 300)  // show first 300 chars
+    });
+  } catch (e) {
+    res.status(500).json({
+      ok: false,
+      name: e.name,
+      message: e.message,
+      cause: (e.cause && (e.cause.code || String(e.cause))) || null
+    });
+  }
+});
 
 // --- end diagnostic route ---
 
