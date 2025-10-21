@@ -3,7 +3,6 @@ const BASE = process.env.DATAFORSEO_BASE || 'https://api.dataforseo.com';
 const LOGIN = process.env.DATAFORSEO_LOGIN;
 const PASSWORD = process.env.DATAFORSEO_PASSWORD;
 
-// helper to build Basic auth header
 function authHeader() {
   if (!LOGIN || !PASSWORD) {
     throw new Error('DATAFORSEO_LOGIN or DATAFORSEO_PASSWORD not set');
@@ -12,7 +11,6 @@ function authHeader() {
   return `Basic ${b64}`;
 }
 
-// central fetch with strong error reporting
 async function dfetch(path, { method = 'POST', body = null } = {}) {
   const url = `${BASE}${path}`;
   try {
@@ -25,27 +23,42 @@ async function dfetch(path, { method = 'POST', body = null } = {}) {
       body: body ? JSON.stringify(body) : null
     });
 
-    const text = await res.text(); // capture raw body for diagnostics
+    const text = await res.text();
     if (!res.ok) {
-      // log full detail to server logs
       console.error('DF ERROR', { url, status: res.status, statusText: res.statusText, body: text?.slice(0, 500) });
       throw new Error(`HTTP ${res.status} ${res.statusText} - ${text?.slice(0, 200)}`);
     }
-    // try JSON, fall back to text
     try { return JSON.parse(text); } catch { return text; }
   } catch (e) {
-    console.error('DF FETCH FAILED', { url, message: e.message, stack: e.stack });
+    console.error('DF FETCH FAILED', { url, message: e.message });
     throw new Error(`fetch failed: ${e.message}`);
   }
 }
 
-// Returns top-10 snapshot + domain matches for quick debugging
+// Flatten whatever DF returns into a single array of result items
+function extractItems(dfTaskResult0) {
+  if (!dfTaskResult0 || typeof dfTaskResult0 !== 'object') return [];
+
+  // Common case
+  if (Array.isArray(dfTaskResult0.items)) return dfTaskResult0.items;
+
+  // Some sections nest arrays or have { items: [] } under different keys.
+  let out = [];
+  for (const v of Object.values(dfTaskResult0)) {
+    if (Array.isArray(v)) {
+      out = out.concat(v);
+    } else if (v && typeof v === 'object' && Array.isArray(v.items)) {
+      out = out.concat(v.items);
+    }
+  }
+  return out;
+}
+
 async function previewTop(keyword, targetDomain, locationCode) {
-  // sensible defaults; allow overrides via env
   const loc =
     Number(locationCode) ||
     Number(process.env.DF_LOCATION_CODE) ||
-    1016367; // Chicago, Cook County, IL, US
+    1016367; // Chicago, Cook County, IL
 
   const payload = [
     {
@@ -55,36 +68,31 @@ async function previewTop(keyword, targetDomain, locationCode) {
       device: 'desktop',
       os: 'windows',
       depth: 100,
-      // optional targeting to highlight a domain in DF result
       target: targetDomain
     }
   ];
 
   const data = await dfetch('/v3/serp/google/organic/live/advanced', payload);
 
-  // Normalize response
-  const items =
-    data?.tasks?.[0]?.result?.[0]?.items ||
-    data?.tasks?.[0]?.result?.[0]?.top_stories?.items || // just in case
-    [];
+  const result0 = data?.tasks?.[0]?.result?.[0] || {};
+  const items = extractItems(result0);
 
-  const top10 = items
-    .filter(it => typeof it.rank_group === 'number')
-    .sort((a, b) => a.rank_group - b.rank_group)
-    .slice(0, 10)
+  const normalized = items
     .map(it => ({
-      rank: it.rank_group,
-      type: it.type,
-      host: it.domain || it.url?.split('/')[2] || '',
+      rank: Number(it.rank_group ?? it.rank_absolute ?? it.rank ?? 0),
+      type: it.type || '',
+      host: it.domain || (typeof it.url === 'string' ? (it.url.split('/')[2] || '') : ''),
       url: it.url || ''
-    }));
+    }))
+    .filter(r => Number.isFinite(r.rank) && r.rank > 0)
+    .sort((a, b) => a.rank - b.rank);
 
-  const matches = top10.filter(i => (i.host || '').includes(targetDomain));
+  const top10 = normalized.slice(0, 10);
+  const matches = normalized.filter(i => (i.host || '').includes(targetDomain));
 
   return { top10, matches };
 }
 
-// Minimal shape used by rankingService
 async function getSerpResults(keyword, targetDomain, locationCode) {
   const { top10, matches } = await previewTop(keyword, targetDomain, locationCode);
   const best = matches.sort((a, b) => a.rank - b.rank)[0];
@@ -101,7 +109,4 @@ async function getSerpResults(keyword, targetDomain, locationCode) {
     : null;
 }
 
-module.exports = {
-  previewTop,
-  getSerpResults
-};
+module.exports = { previewTop, getSerpResults };
