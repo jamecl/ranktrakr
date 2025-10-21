@@ -232,6 +232,46 @@ router.get('/debug/ping-dataforseo', async (req, res) => {
     });
   }
 });
+// --- Diagnostic: check outbound call to DataForSEO ---
+router.get('/debug/ping-dataforseo', async (req, res) => {
+  try {
+    const { DFS_LOGIN, DFS_PASSWORD } = process.env;
+    const endpoint = 'https://api.dataforseo.com/v3/serp/google/organic/live/regular';
+
+    const body = [{
+      keyword: 'test',
+      location_name: 'Chicago,Illinois,United States',
+      language_code: 'en',
+      device: 'desktop'
+    }];
+
+    const r = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Basic ' + Buffer.from(`${DFS_LOGIN}:${DFS_PASSWORD}`).toString('base64'),
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(body)
+    });
+
+    const text = await r.text();
+    res.status(200).json({
+      ok: r.ok,
+      status: r.status,
+      statusText: r.statusText,
+      endpoint,
+      sample: text.slice(0, 800)
+    });
+  } catch (e) {
+    res.status(500).json({
+      ok: false,
+      name: e.name,
+      message: e.message,
+      cause: (e.cause && (e.cause.code || String(e.cause))) || null
+    });
+  }
+});
+
 // --- end diagnostic route ---
 
 module.exports = router;
