@@ -1,3 +1,4 @@
+// routes/keywords.js
 const express = require('express');
 const router = express.Router();
 const pool = require('../config/database');
@@ -9,6 +10,9 @@ const dataforSEOService = require('../services/dataforSEOService');
  * - Static paths (/, /update, /debug/*) come BEFORE '/:id'
  *   so Express doesn't treat "debug" or "update" as an :id.
  */
+
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 /* =========================
  *  GET /api/keywords
@@ -28,28 +32,29 @@ router.get('/', async (req, res) => {
  *  POST /api/keywords/update
  *  Manual “update now”
  * ========================= */
-// Trigger manual ranking update (returns immediately)
 router.post('/update', async (req, res) => {
-  // respond first so the proxy doesn't time out
+  // respond immediately so proxy doesn’t time out
   res.json({ success: true, started: true });
 
   // run the job in the background
-  try {
-    // let Node finish sending the response before heavy work
-    setTimeout(async () => {
-      try {
-        console.log('[update] manual run started');
-        await rankingService.updateAllKeywordRankings();
-        console.log('[update] manual run finished');
-      } catch (err) {
-        console.error('[update] manual run failed:', err);
-      }
-    }, 0);
-  } catch (e) {
-    console.error('[update] schedule failed:', e);
-  }
+  setTimeout(async () => {
+    try {
+      console.log('[update] manual run started');
+      await rankingService.updateAllKeywordRankings();
+      console.log('[update] manual run finished');
+    } catch (err) {
+      console.error('[update] manual run failed:', err);
+    }
+  }, 0);
 });
 
+/* =========================
+ *  GET /api/keywords/update  -> 405
+ *  (guards against treating "update" as '/:id')
+ * ========================= */
+router.get('/update', (req, res) => {
+  res.status(405).json({ success: false, error: 'Use POST /api/keywords/update' });
+});
 
 /* =========================
  *  DEBUG: outbound connectivity to DataForSEO
@@ -58,15 +63,18 @@ router.post('/update', async (req, res) => {
 router.get('/debug/ping-dataforseo', async (req, res) => {
   try {
     const DFS_LOGIN =
-  process.env.DFS_LOGIN ||
-  process.env.DATAFORSEO_LOGIN;
+      process.env.DFS_LOGIN || process.env.DATAFORSEO_LOGIN;
+    const DFS_PASSWORD =
+      process.env.DFS_PASSWORD || process.env.DATAFORSEO_PASSWORD;
 
-const DFS_PASSWORD =
-  process.env.DFS_PASSWORD ||
-  process.env.DATAFORSEO_PASSWORD;
+    if (!DFS_LOGIN || !DFS_PASSWORD) {
+      return res.status(500).json({
+        ok: false,
+        message: 'Missing DFS_LOGIN / DFS_PASSWORD env vars'
+      });
+    }
 
     const endpoint = 'https://api.dataforseo.com/v3/serp/google/organic/live/regular';
-
     const body = [{
       keyword: 'test',
       location_name: 'Chicago,Illinois,United States',
@@ -113,8 +121,6 @@ router.get('/debug/serp', async (req, res) => {
     const domain = String(req.query.domain || 'blumenshinelawgroup.com').trim().toLowerCase();
     const loc = Number(req.query.loc || process.env.DF_LOCATION_CODE || 1016367); // Chicago default
 
-    // Expecting dataforSEOService.previewTop(kw, domain, loc) to return:
-    // { top10: [...], matches: [...], matchCount: number }
     const { top10, matches, matchCount } = await dataforSEOService.previewTop(kw, domain, loc);
 
     res.json({ success: true, kw, domain, loc, matchCount, top10, matches });
@@ -144,7 +150,7 @@ router.post('/', async (req, res) => {
     `;
     const { rows: [newKeyword] } = await pool.query(insert, [cleaned, targetDomain]);
 
-    // Try to store first ranking (non-blocking for UX, but we do inline here)
+    // Attempt to store an initial ranking (non-blocking UX, but done inline)
     try {
       const ranking = await dataforSEOService.getSerpResults(cleaned, targetDomain);
       if (ranking) {
@@ -189,6 +195,12 @@ router.delete('/:id', async (req, res) => {
 router.get('/:id', async (req, res) => {
   try {
     const { id } = req.params;
+
+    // Guard invalid ids early (prevents treating /update etc. as UUIDs)
+    if (!UUID_RE.test(id)) {
+      return res.status(400).json({ success: false, error: 'Invalid id format (UUID expected)' });
+    }
+
     const days = parseInt(req.query.days, 10) || 30;
 
     const { rows: [keyword] } = await pool.query('SELECT * FROM keywords WHERE id = $1', [id]);
