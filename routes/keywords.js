@@ -28,15 +28,28 @@ router.get('/', async (req, res) => {
  *  POST /api/keywords/update
  *  Manual “update now”
  * ========================= */
+// Trigger manual ranking update (returns immediately)
 router.post('/update', async (req, res) => {
+  // respond first so the proxy doesn't time out
+  res.json({ success: true, started: true });
+
+  // run the job in the background
   try {
-    await rankingService.updateAllKeywordRankings();
-    res.json({ success: true, message: 'Rankings updated successfully' });
-  } catch (error) {
-    console.error('Error updating rankings:', error);
-    res.status(500).json({ success: false, error: error.message });
+    // let Node finish sending the response before heavy work
+    setTimeout(async () => {
+      try {
+        console.log('[update] manual run started');
+        await rankingService.updateAllKeywordRankings();
+        console.log('[update] manual run finished');
+      } catch (err) {
+        console.error('[update] manual run failed:', err);
+      }
+    }, 0);
+  } catch (e) {
+    console.error('[update] schedule failed:', e);
   }
 });
+
 
 /* =========================
  *  DEBUG: outbound connectivity to DataForSEO
